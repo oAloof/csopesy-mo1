@@ -117,6 +117,8 @@ void Scheduler::executeProcesses()
                 if (Config::getInstance().getSchedulerType() == "rr" &&
                     currentProcess->getQuantumTime() >= Config::getInstance().getQuantumCycles())
                 {
+                    updateCoreStatus(currentProcess->getCPUCoreID(), false);
+                    handleQuantumExpiration(currentProcess);
                     break;
                 }
 
@@ -147,10 +149,9 @@ void Scheduler::executeProcesses()
                     finishedProcesses.push_back(currentProcess);
                     updateCoreStatus(currentProcess->getCPUCoreID(), false);
                 }
-                else
+                else if (Config::getInstance().getSchedulerType() != "rr")
                 {
                     currentProcess->setState(Process::READY);
-                    currentProcess->resetQuantumTime();
                     readyQueue.push(currentProcess);
                 }
 
@@ -233,13 +234,22 @@ std::shared_ptr<Process> Scheduler::roundRobinSchedule()
     auto process = readyQueue.front();
     readyQueue.pop();
 
-    if (!isQuantumExpired(process))
+    if (isQuantumExpired(process))
     {
-        return process;
+        handleQuantumExpiration(process);
+
+        if (!readyQueue.empty())
+        {
+            process = readyQueue.front();
+            readyQueue.pop();
+        }
+        else
+        {
+            return nullptr;
+        }
     }
 
-    handleQuantumExpiration(process);
-    return nullptr; // Let the next cycle handle the next process
+    return process;
 }
 
 bool Scheduler::isQuantumExpired(const std::shared_ptr<Process> &process) const
@@ -307,18 +317,15 @@ void Scheduler::waitForCycleSync()
 {
     std::unique_lock<std::timed_mutex> syncLock(syncMutex);
 
-    // Get running process count without holding the main mutex
     int runningCount;
     {
         std::unique_lock<std::timed_mutex> lock(mutex);
         runningCount = runningProcesses.size();
     }
 
-    // If no processes are running, still need to delay for proper timing
     if (runningCount == 0)
     {
         incrementCPUCycles();
-        // Restore the delay to maintain proper timing
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         return;
     }
@@ -329,7 +336,6 @@ void Scheduler::waitForCycleSync()
         incrementCPUCycles();
         coresWaiting = 0;
         syncCv.notify_all();
-        // Restore the delay here too
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     else
