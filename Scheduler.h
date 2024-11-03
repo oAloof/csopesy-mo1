@@ -31,10 +31,7 @@ public:
 
 private:
     Scheduler();
-    ~Scheduler()
-    {
-        stopScheduling();
-    }
+    ~Scheduler() { stopScheduling(); }
 
     std::atomic<bool> isInitialized{false};
 
@@ -43,11 +40,11 @@ private:
     std::vector<std::shared_ptr<Process>> runningProcesses;
     std::vector<std::shared_ptr<Process>> finishedProcesses;
 
-    // Synchronization
-    mutable std::mutex mutex;       // Mutex for queue access
-    mutable std::mutex syncMutex;   // Mutex for synchronization between threads
-    std::condition_variable cv;     // Condition variable for process availability
-    std::condition_variable syncCv; // Condition variable for cycle synchronization
+    // Synchronization with timed mutexes
+    mutable std::timed_mutex mutex;
+    mutable std::timed_mutex syncMutex;
+    std::condition_variable_any cv;
+    std::condition_variable_any syncCv;
     std::atomic<int> coresWaiting{0};
     std::atomic<bool> processingActive{false};
 
@@ -55,6 +52,8 @@ private:
     std::vector<std::thread> cpuThreads;
     std::vector<bool> coreStatus;
     std::atomic<uint64_t> cpuCycles{0};
+    std::thread cycleCounterThread;
+    std::atomic<bool> cycleCounterActive{false};
 
     // Core methods
     void executeProcesses();
@@ -66,10 +65,6 @@ private:
     void updateCoreStatus(int coreID, bool active);
     void incrementCPUCycles() { ++cpuCycles; }
     void waitForCycleSync();
-
-    // For scheduler-test
-    std::thread cycleCounterThread;
-    std::atomic<bool> cycleCounterActive{false};
     void cycleCounterLoop();
 };
 

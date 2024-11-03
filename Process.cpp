@@ -30,20 +30,18 @@ void Process::addCommand(ICommand::CommandType commandType)
 {
     if (commandType == ICommand::PRINT)
     {
-        // std::string output = "Output from process " + name + " (PID: " + std::to_string(pid) + ")";
-        // auto command = std::make_shared<PrintCommand>(pid, output);
-        // commandList.push_back(command);
         auto command = std::make_shared<PrintCommand>(pid, name);
         commandList.push_back(command);
     }
 }
 
-void Process::executeCurrentCommand(int coreID) const
+void Process::executeCurrentCommand(int coreID)
 {
     if (commandCounter < commandList.size())
     {
         try
         {
+            // Ensure thread-safe execution of the command
             commandList[commandCounter]->execute();
         }
         catch (const std::exception &e)
@@ -62,7 +60,7 @@ void Process::moveToNextLine()
     }
 }
 
-bool Process::isFinished() const
+bool Process::isFinished()
 {
     return commandCounter >= commandList.size();
 }
@@ -80,42 +78,59 @@ int Process::generateInstructionCount() const
     return dis(gen);
 }
 
-void Process::displayProcessInfo() const
+void Process::displayProcessInfo()
 {
-    std::cout << "\n"
-              << name << " ("
-              << formatTimestamp(creationTime) << ") ";
+    std::string processInfo;
 
-    if (state == FINISHED)
     {
-        std::cout << "Finished   "
-                  << getLinesOfCode() << " / " << getLinesOfCode() << "\n";
+        std::lock_guard<std::mutex> lock(processMutex);
+
+        processInfo += name + " (" + formatTimestamp(creationTime) + ") ";
+
+        if (state == FINISHED)
+        {
+            processInfo += "Finished   " + std::to_string(getLinesOfCode()) + " / " + std::to_string(getLinesOfCode()) + "\n";
+        }
+        else
+        {
+            processInfo += "Core: " + std::to_string(cpuCoreID) + "    " +
+                           std::to_string(getCommandCounter()) + " / " + std::to_string(getLinesOfCode()) + "\n";
+        }
     }
-    else
-    {
-        std::cout << "Core: " << cpuCoreID << "    "
-                  << getCommandCounter() << " / " << getLinesOfCode() << "\n";
-    }
+
+    std::cout << processInfo;
 }
 
 // Getters and setters
 int Process::getPID() const { return pid; }
 std::string Process::getName() const { return name; }
-Process::ProcessState Process::getState() const { return state; }
-void Process::setState(ProcessState newState) { state = newState; }
+
+Process::ProcessState Process::getState()
+{
+    return state.load();
+}
+
+void Process::setState(ProcessState newState)
+{
+    state.store(newState);
+}
 
 void Process::setCPUCoreID(int id)
 {
-    if (id >= -1 && id < Config::getInstance().getNumCPU())
-    {
-        cpuCoreID = id;
-    }
-    else
-    {
-        throw std::invalid_argument("Invalid CPU core ID");
-    }
+    cpuCoreID.store(id);
 }
 
-int Process::getCPUCoreID() const { return cpuCoreID; }
-int Process::getCommandCounter() const { return commandCounter.load(); }
-int Process::getLinesOfCode() const { return commandList.size(); }
+int Process::getCPUCoreID()
+{
+    return cpuCoreID.load();
+}
+
+int Process::getCommandCounter()
+{
+    return commandCounter.load();
+}
+
+int Process::getLinesOfCode()
+{
+    return static_cast<int>(commandList.size());
+}

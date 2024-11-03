@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <atomic>
+#include <mutex>
 #include "ICommand.h"
 #include "Config.h"
 #include "PrintCommand.h"
@@ -25,20 +26,20 @@ public:
 
     // Command management
     void addCommand(ICommand::CommandType commandType);
-    void executeCurrentCommand(int coreID) const;
+    void executeCurrentCommand(int coreID);
     void moveToNextLine();
 
     // Process status
-    bool isFinished() const;
-    int getCommandCounter() const;
-    int getLinesOfCode() const;
-    ProcessState getState() const;
+    bool isFinished();
+    int getCommandCounter();
+    int getLinesOfCode();
+    ProcessState getState();
     void setState(ProcessState state);
     std::chrono::system_clock::time_point getCreationTime() const { return creationTime; }
 
     // Core assignment
     void setCPUCoreID(int cpuCoreID);
-    int getCPUCoreID() const;
+    int getCPUCoreID();
 
     // Process identification
     int getPID() const;
@@ -46,28 +47,29 @@ public:
 
     // Round Robin support
     void resetQuantumTime() { quantumTime = 0; }
-    uint32_t getQuantumTime() const { return quantumTime.load(); }
+    uint32_t getQuantumTime() { return quantumTime.load(); }
     void incrementQuantumTime() { ++quantumTime; }
 
     // Process-smi command
-    void displayProcessInfo() const;
+    void displayProcessInfo();
 
 private:
     // Basic process information
     const int pid;
     const std::string name;
-    ProcessState state;
-    int cpuCoreID;
+    std::atomic<ProcessState> state; 
+    std::atomic<int> cpuCoreID;
     std::chrono::system_clock::time_point creationTime;
 
     // Command management
     std::vector<std::shared_ptr<ICommand>> commandList;
-    std::atomic<int> commandCounter; // Made atomic for thread safety
+    std::atomic<int> commandCounter; 
 
     // Round Robin timing
-    std::atomic<uint32_t> quantumTime; // Made atomic for thread safety
+    std::atomic<uint32_t> quantumTime; 
 
-    // Helper methods
+    mutable std::mutex processMutex;
+
     int generateInstructionCount() const;
 };
 

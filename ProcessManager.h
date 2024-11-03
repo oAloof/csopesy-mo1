@@ -33,6 +33,7 @@ private:
     std::atomic<bool> batchProcessingActive;
     std::thread batchProcessThread;
     std::mutex processesMutex;
+    std::mutex batchMutex;
     uint64_t lastProcessCreationCycle;
 
     void batchProcessingLoop();

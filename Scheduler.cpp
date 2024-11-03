@@ -41,6 +41,7 @@ void Scheduler::stopScheduling()
     processingActive = false;
     cycleCounterActive = false;
     cv.notify_all();
+    syncCv.notify_all();
 
     for (auto &thread : cpuThreads)
     {
@@ -60,11 +61,20 @@ void Scheduler::stopScheduling()
 
 void Scheduler::addProcess(std::shared_ptr<Process> process)
 {
+    if (!process)
+        return;
+
+    std::unique_lock<std::timed_mutex> lock(mutex, std::defer_lock);
+    if (!lock.try_lock_for(std::chrono::milliseconds(100)))
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        readyQueue.push(process);
+        return;
     }
-    cv.notify_one();
+
+    readyQueue.push(process);
+    lock.unlock();
+
+    cv.notify_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
 void Scheduler::executeProcesses()
@@ -72,13 +82,28 @@ void Scheduler::executeProcesses()
     while (processingActive)
     {
         std::shared_ptr<Process> currentProcess = nullptr;
+        bool hasProcess = false;
+
         {
-            std::unique_lock<std::mutex> lock(mutex);
-            cv.wait(lock, [this]
-                    { return !readyQueue.empty() || !processingActive; });
+            std::unique_lock<std::timed_mutex> lock(mutex);
+
+            if (!readyQueue.empty())
+            {
+                hasProcess = true;
+            }
+            else
+            {
+                hasProcess = cv.wait_for(lock, std::chrono::milliseconds(100), [this]
+                                         { return !processingActive || !readyQueue.empty(); });
+            }
+
             if (!processingActive)
                 break;
-            currentProcess = getNextProcess();
+
+            if (hasProcess && !readyQueue.empty())
+            {
+                currentProcess = getNextProcess();
+            }
         }
 
         if (currentProcess)
@@ -87,7 +112,7 @@ void Scheduler::executeProcesses()
             int delays = Config::getInstance().getDelaysPerExec();
             int currentDelay = 0;
 
-            while (!currentProcess->isFinished())
+            while (!currentProcess->isFinished() && processingActive)
             {
                 if (Config::getInstance().getSchedulerType() == "rr" &&
                     currentProcess->getQuantumTime() >= Config::getInstance().getQuantumCycles())
@@ -95,14 +120,12 @@ void Scheduler::executeProcesses()
                     break;
                 }
 
-                // Handle delay cycles
                 if (currentDelay < delays)
                 {
                     currentDelay++;
                 }
                 else
                 {
-                    // Execute instruction without holding the mutex
                     currentProcess->executeCurrentCommand(currentProcess->getCPUCoreID());
                     currentProcess->moveToNextLine();
                     currentDelay = 0;
@@ -113,17 +136,16 @@ void Scheduler::executeProcesses()
                     }
                 }
 
-                // Synchronize with other threads
                 waitForCycleSync();
             }
 
-            // Update process state and lists with proper locking
             {
-                std::lock_guard<std::mutex> lock(mutex);
+                std::lock_guard<std::timed_mutex> lock(mutex);
                 if (currentProcess->isFinished())
                 {
                     currentProcess->setState(Process::FINISHED);
                     finishedProcesses.push_back(currentProcess);
+                    updateCoreStatus(currentProcess->getCPUCoreID(), false);
                 }
                 else
                 {
@@ -131,25 +153,30 @@ void Scheduler::executeProcesses()
                     currentProcess->resetQuantumTime();
                     readyQueue.push(currentProcess);
                 }
+
                 auto it = std::find(runningProcesses.begin(), runningProcesses.end(), currentProcess);
                 if (it != runningProcesses.end())
+                {
                     runningProcesses.erase(it);
-                updateCoreStatus(currentProcess->getCPUCoreID(), false);
+                }
             }
+
+            cv.notify_all();
         }
         else
         {
-            // No current process, still need to sync cycles
-            waitForCycleSync();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            cv.notify_all();
         }
     }
 }
 
 std::shared_ptr<Process> Scheduler::getNextProcess()
 {
-    // Mutex should already be locked by the caller
     if (readyQueue.empty())
+    {
         return nullptr;
+    }
 
     int availableCore = -1;
     for (size_t i = 0; i < coreStatus.size(); ++i)
@@ -162,7 +189,9 @@ std::shared_ptr<Process> Scheduler::getNextProcess()
     }
 
     if (availableCore == -1)
+    {
         return nullptr;
+    }
 
     std::shared_ptr<Process> nextProcess;
     if (Config::getInstance().getSchedulerType() == "rr")
@@ -227,18 +256,26 @@ void Scheduler::handleQuantumExpiration(std::shared_ptr<Process> process)
 
 void Scheduler::getCPUUtilization() const
 {
-    std::lock_guard<std::mutex> lock(mutex);
     std::stringstream report;
+    int totalCores;
+    int usedCores;
+    std::vector<std::shared_ptr<Process>> runningProcessesCopy;
+    std::vector<std::shared_ptr<Process>> finishedProcessesCopy;
 
-    int totalCores = Config::getInstance().getNumCPU();
-    int usedCores = runningProcesses.size();
+    {
+        std::lock_guard<std::timed_mutex> lock(mutex);
+        totalCores = Config::getInstance().getNumCPU();
+        usedCores = runningProcesses.size();
+        runningProcessesCopy = runningProcesses;
+        finishedProcessesCopy = finishedProcesses;
+    }
 
     report << "CPU utilization: " << (usedCores * 100 / totalCores) << "%\n";
     report << "Cores used: " << usedCores << "\n";
     report << "Cores available: " << (totalCores - usedCores) << "\n\n";
 
     report << "Running processes:\n";
-    for (const auto &process : runningProcesses)
+    for (const auto &process : runningProcessesCopy)
     {
         report << process->getName()
                << " (" << formatTimestamp(std::chrono::system_clock::now()) << ")   "
@@ -247,7 +284,7 @@ void Scheduler::getCPUUtilization() const
     }
 
     report << "\nFinished processes:\n";
-    for (const auto &process : finishedProcesses)
+    for (const auto &process : finishedProcessesCopy)
     {
         report << process->getName()
                << " (" << formatTimestamp(std::chrono::system_clock::now()) << ")   "
@@ -268,42 +305,78 @@ void Scheduler::getCPUUtilization() const
 
 void Scheduler::waitForCycleSync()
 {
-    std::unique_lock<std::mutex> lock(syncMutex);
-    coresWaiting++;
+    std::unique_lock<std::timed_mutex> syncLock(syncMutex);
 
-    int activeCores = std::max(1, static_cast<int>(runningProcesses.size()));
-
-    if (coresWaiting >= activeCores)
+    // Get running process count without holding the main mutex
+    int runningCount;
     {
-        coresWaiting = 0;
+        std::unique_lock<std::timed_mutex> lock(mutex);
+        runningCount = runningProcesses.size();
+    }
+
+    // If no processes are running, still need to delay for proper timing
+    if (runningCount == 0)
+    {
         incrementCPUCycles();
-        cv.notify_all();
+        // Restore the delay to maintain proper timing
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return;
+    }
+
+    coresWaiting++;
+    if (coresWaiting >= runningCount)
+    {
+        incrementCPUCycles();
+        coresWaiting = 0;
+        syncCv.notify_all();
+        // Restore the delay here too
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     else
     {
-        cv.wait(lock, [this]
-                { return coresWaiting == 0; });
+        syncCv.wait_for(syncLock,
+                        std::chrono::milliseconds(100),
+                        [this]
+                        { return coresWaiting == 0; });
+
+        if (coresWaiting > 0)
+        {
+            coresWaiting = 0;
+            incrementCPUCycles();
+            syncCv.notify_all();
+        }
     }
 }
 
 void Scheduler::updateCoreStatus(int coreID, bool active)
 {
-    std::lock_guard<std::mutex> lock(mutex);
     if (coreID >= 0 && coreID < static_cast<int>(coreStatus.size()))
     {
         coreStatus[coreID] = active;
+        if (!active)
+        {
+            cv.notify_all();
+        }
     }
 }
 
 void Scheduler::cycleCounterLoop()
 {
-    // This now acts as a backup to ensure cycles increment even when no cores are active
     while (cycleCounterActive)
     {
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
-        if (runningProcesses.empty())
+        bool shouldSleep = false;
         {
-            incrementCPUCycles();
+            std::unique_lock<std::timed_mutex> lock(syncMutex);
+            if (runningProcesses.empty() && readyQueue.empty())
+            {
+                incrementCPUCycles();
+                shouldSleep = true;
+            }
+        }
+
+        if (shouldSleep)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
 }

@@ -12,8 +12,7 @@ void ProcessManager::createProcess(const std::string &name)
         throw std::runtime_error("Process name cannot be empty");
     }
 
-    std::lock_guard<std::mutex> lock(processesMutex);
-
+    std::unique_lock<std::mutex> lock(processesMutex);
     if (processes.find(name) != processes.end())
     {
         throw std::runtime_error("Process with name '" + name + "' already exists");
@@ -23,6 +22,8 @@ void ProcessManager::createProcess(const std::string &name)
     {
         auto process = std::make_shared<Process>(nextPID++, name);
         processes[name] = process;
+        // Release lock before scheduling to prevent deadlock
+        lock.unlock();
         Scheduler::getInstance().addProcess(process);
     }
     catch (const std::exception &e)
@@ -34,29 +35,36 @@ void ProcessManager::createProcess(const std::string &name)
 
 std::shared_ptr<Process> ProcessManager::getProcess(const std::string &name)
 {
-    std::lock_guard<std::mutex> lock(processesMutex);
-
-    auto it = processes.find(name);
-    if (it != processes.end())
+    std::shared_ptr<Process> result;
     {
-        return it->second;
+        std::lock_guard<std::mutex> lock(processesMutex);
+        auto it = processes.find(name);
+        if (it != processes.end())
+        {
+            result = it->second;
+        }
     }
-
-    return nullptr;
+    return result;
 }
 
 void ProcessManager::listProcesses()
 {
-    std::lock_guard<std::mutex> lock(processesMutex);
-
-    int totalCores = Config::getInstance().getNumCPU();
+    std::vector<std::shared_ptr<Process>> processSnapshot;
+    int totalCores;
     int activeCount = 0;
-    for (const auto &pair : processes)
+
     {
-        const auto &process = pair.second;
-        if (process->getState() == Process::RUNNING)
+        std::lock_guard<std::mutex> lock(processesMutex);
+        totalCores = Config::getInstance().getNumCPU();
+
+        // Create a snapshot of processes to prevent holding the lock during output
+        for (const auto &pair : processes)
         {
-            activeCount++;
+            processSnapshot.push_back(pair.second);
+            if (pair.second->getState() == Process::RUNNING)
+            {
+                activeCount++;
+            }
         }
     }
 
@@ -65,28 +73,20 @@ void ProcessManager::listProcesses()
     std::cout << "Cores available: " << (totalCores - activeCount) << "\n\n";
 
     std::cout << "Running processes:\n";
-    for (const auto &pair : processes)
+    for (const auto &process : processSnapshot)
     {
-        const auto &process = pair.second;
         if (process->getState() == Process::RUNNING)
         {
-            std::cout << process->getName()
-                      << " (" << formatTimestamp(std::chrono::system_clock::now()) << ")   "
-                      << "Core: " << process->getCPUCoreID() << "    "
-                      << process->getCommandCounter() << " / " << process->getLinesOfCode() << "\n";
+            process->displayProcessInfo();
         }
     }
 
     std::cout << "\nFinished processes:\n";
-    for (const auto &pair : processes)
+    for (const auto &process : processSnapshot)
     {
-        const auto &process = pair.second;
         if (process->getState() == Process::FINISHED)
         {
-            std::cout << process->getName()
-                      << " (" << formatTimestamp(std::chrono::system_clock::now()) << ")   "
-                      << "Finished    "
-                      << process->getLinesOfCode() << " / " << process->getLinesOfCode() << "\n";
+            process->displayProcessInfo();
         }
     }
 }
@@ -98,21 +98,27 @@ void ProcessManager::startBatchProcessing()
         throw std::runtime_error("System must be initialized before starting batch processing");
     }
 
-    if (!batchProcessingActive)
     {
-        batchProcessingActive = true;
-        batchProcessThread = std::thread(&ProcessManager::batchProcessingLoop, this);
+        std::lock_guard<std::mutex> lock(batchMutex);
+        if (!batchProcessingActive)
+        {
+            batchProcessingActive = true;
+            batchProcessThread = std::thread(&ProcessManager::batchProcessingLoop, this);
+        }
     }
 }
 
 void ProcessManager::stopBatchProcessing()
 {
-    if (batchProcessingActive)
     {
-        batchProcessingActive = false;
-        if (batchProcessThread.joinable())
+        std::lock_guard<std::mutex> lock(batchMutex);
+        if (batchProcessingActive)
         {
-            batchProcessThread.join();
+            batchProcessingActive = false;
+            if (batchProcessThread.joinable())
+            {
+                batchProcessThread.join();
+            }
         }
     }
 }
@@ -120,14 +126,15 @@ void ProcessManager::stopBatchProcessing()
 void ProcessManager::batchProcessingLoop()
 {
     int processCounter = 1;
-    lastProcessCreationCycle = 0;
-    uint64_t batchFreq = Config::getInstance().getBatchProcessFreq();
+    uint64_t lastCycle = Scheduler::getInstance().getCPUCycles();
+    const uint64_t batchFreq = Config::getInstance().getBatchProcessFreq();
 
     while (batchProcessingActive)
     {
         uint64_t currentCycle = Scheduler::getInstance().getCPUCycles();
 
-        if (currentCycle > lastProcessCreationCycle + batchFreq)
+        // Check if enough cycles have passed since last process creation
+        if ((currentCycle - lastCycle) >= batchFreq)
         {
             std::ostringstream processName;
             processName << "p" << std::setfill('0') << std::setw(2) << processCounter++;
@@ -135,7 +142,7 @@ void ProcessManager::batchProcessingLoop()
             try
             {
                 createProcess(processName.str());
-                lastProcessCreationCycle = currentCycle;
+                lastCycle = currentCycle; // Update last creation cycle
             }
             catch (const std::exception &e)
             {
@@ -143,7 +150,8 @@ void ProcessManager::batchProcessingLoop()
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        // Longer sleep time to reduce CPU usage
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 }
 
