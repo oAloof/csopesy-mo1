@@ -315,42 +315,67 @@ void Scheduler::getCPUUtilization() const
 
 void Scheduler::waitForCycleSync()
 {
-    std::unique_lock<std::timed_mutex> syncLock(syncMutex);
+    const int CYCLE_SPEED = 1000; // Base timing in microseconds
+    const int CYCLE_WAIT = 500;
 
-    int runningCount;
+    try
     {
-        std::unique_lock<std::timed_mutex> lock(mutex);
-        runningCount = runningProcesses.size();
-    }
+        std::unique_lock<std::timed_mutex> syncLock(syncMutex);
+        std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_SPEED));
 
-    if (runningCount == 0)
-    {
-        incrementCPUCycles();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        return;
-    }
-
-    coresWaiting++;
-    if (coresWaiting >= runningCount)
-    {
-        incrementCPUCycles();
-        coresWaiting = 0;
-        syncCv.notify_all();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    else
-    {
-        syncCv.wait_for(syncLock,
-                        std::chrono::milliseconds(100),
-                        [this]
-                        { return coresWaiting == 0; });
-
-        if (coresWaiting > 0)
+        int runningCount;
         {
-            coresWaiting = 0;
-            incrementCPUCycles();
-            syncCv.notify_all();
+            std::unique_lock<std::timed_mutex> lock(mutex);
+            runningCount = runningProcesses.size();
         }
+
+        if (runningCount == 0)
+        {
+            incrementCPUCycles();
+            std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_WAIT));
+            return;
+        }
+
+        try
+        {
+            coresWaiting++;
+            if (coresWaiting >= runningCount)
+            {
+                incrementCPUCycles();
+                coresWaiting = 0;
+                syncCv.notify_all();
+                std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_WAIT));
+            }
+            else
+            {
+                syncCv.wait_for(syncLock,
+                                std::chrono::microseconds(CYCLE_WAIT),
+                                [this]
+                                { return coresWaiting == 0; });
+
+                std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_SPEED));
+
+                if (coresWaiting > 0)
+                {
+                    coresWaiting = 0;
+                    incrementCPUCycles();
+                    syncCv.notify_all();
+                }
+            }
+        }
+        catch (...)
+        {
+            if (coresWaiting > 0)
+            {
+                coresWaiting--;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_SPEED));
+            throw;
+        }
+    }
+    catch (...)
+    {
+        std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_SPEED));
     }
 }
 
