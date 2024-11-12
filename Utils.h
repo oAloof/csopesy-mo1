@@ -22,4 +22,21 @@ inline std::string formatTimestamp(const std::chrono::system_clock::time_point &
     return ss.str();
 }
 
+inline std::string getCurrentTimestamp()
+{
+    auto now = std::chrono::system_clock::now();
+    auto time_c = std::chrono::system_clock::to_time_t(now);
+    std::tm *ltm = std::localtime(&time_c);
+
+    std::stringstream ss;
+    ss << std::setfill('0')
+       << std::setw(2) << ltm->tm_mon + 1 << "/"
+       << std::setw(2) << ltm->tm_mday << "/"
+       << "2024 "
+       << std::setw(2) << ltm->tm_hour << ":"
+       << std::setw(2) << ltm->tm_min << ":"
+       << std::setw(2) << ltm->tm_sec;
+    return ss.str();
+}
+
 #endif

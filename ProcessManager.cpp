@@ -4,6 +4,7 @@
 #include <sstream>
 #include <chrono>
 #include "Utils.h"
+#include "MemoryManager.h"
 
 void ProcessManager::createProcess(const std::string &name)
 {
@@ -22,8 +23,17 @@ void ProcessManager::createProcess(const std::string &name)
     {
         auto process = std::make_shared<Process>(nextPID++, name);
         processes[name] = process;
+
         // Release lock before scheduling to prevent deadlock
         lock.unlock();
+
+        bool memoryAllocated = MemoryManager::getInstance().allocateMemory(process);
+        if (!memoryAllocated)
+        {
+            std::cout << "Warning: Could not allocate memory for process " << name
+                      << ". Process will continue in ready queue.\n";
+        }
+
         Scheduler::getInstance().addProcess(process);
     }
     catch (const std::exception &e)

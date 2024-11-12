@@ -66,6 +66,9 @@ private:
     void incrementCPUCycles() { ++cpuCycles; }
     void waitForCycleSync();
     void cycleCounterLoop();
+
+    uint32_t lastMemorySnapshotCycle{0};
+    void generateMemorySnapshotIfNeeded();
 };
 
 #endif

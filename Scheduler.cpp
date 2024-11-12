@@ -7,6 +7,7 @@
 #include <thread>
 #include <ctime>
 #include "Utils.h"
+#include "MemoryManager.h"
 
 Scheduler::Scheduler()
 {
@@ -145,6 +146,8 @@ void Scheduler::executeProcesses()
                 std::lock_guard<std::timed_mutex> lock(mutex);
                 if (currentProcess->isFinished())
                 {
+                    MemoryManager::getInstance().releaseMemory(currentProcess->getName());
+
                     currentProcess->setState(Process::FINISHED);
                     finishedProcesses.push_back(currentProcess);
                     updateCoreStatus(currentProcess->getCPUCoreID(), false);
@@ -206,6 +209,12 @@ std::shared_ptr<Process> Scheduler::getNextProcess()
 
     if (nextProcess)
     {
+        if (!MemoryManager::getInstance().allocateMemory(nextProcess))
+        {
+            // If allocation fails, put back in ready queue
+            readyQueue.push(nextProcess);
+            return nullptr;
+        }
         nextProcess->setCPUCoreID(availableCore);
         coreStatus[availableCore] = true;
         runningProcesses.push_back(nextProcess);
@@ -259,6 +268,8 @@ bool Scheduler::isQuantumExpired(const std::shared_ptr<Process> &process) const
 
 void Scheduler::handleQuantumExpiration(std::shared_ptr<Process> process)
 {
+    MemoryManager::getInstance().releaseMemory(process->getName());
+
     process->resetQuantumTime();
     process->setState(Process::READY);
     readyQueue.push(process);
@@ -316,7 +327,7 @@ void Scheduler::getCPUUtilization() const
 void Scheduler::waitForCycleSync()
 {
     const int CYCLE_SPEED = 1000; // Base timing in microseconds
-    const int CYCLE_WAIT = 500;
+    const int CYCLE_WAIT = 1000;
 
     try
     {
@@ -332,6 +343,9 @@ void Scheduler::waitForCycleSync()
         if (runningCount == 0)
         {
             incrementCPUCycles();
+
+            generateMemorySnapshotIfNeeded();
+
             std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_WAIT));
             return;
         }
@@ -344,6 +358,7 @@ void Scheduler::waitForCycleSync()
                 incrementCPUCycles();
                 coresWaiting = 0;
                 syncCv.notify_all();
+                generateMemorySnapshotIfNeeded();
                 std::this_thread::sleep_for(std::chrono::microseconds(CYCLE_WAIT));
             }
             else
@@ -360,6 +375,7 @@ void Scheduler::waitForCycleSync()
                     coresWaiting = 0;
                     incrementCPUCycles();
                     syncCv.notify_all();
+                    generateMemorySnapshotIfNeeded();
                 }
             }
         }
@@ -409,5 +425,17 @@ void Scheduler::cycleCounterLoop()
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
+    }
+}
+
+void Scheduler::generateMemorySnapshotIfNeeded()
+{
+    uint32_t currentCycle = static_cast<uint32_t>(cpuCycles.load());
+    uint32_t quantumCycles = Config::getInstance().getQuantumCycles();
+
+    if (currentCycle >= lastMemorySnapshotCycle + quantumCycles)
+    {
+        MemoryManager::getInstance().generateMemorySnapshot(currentCycle);
+        lastMemorySnapshotCycle = currentCycle;
     }
 }

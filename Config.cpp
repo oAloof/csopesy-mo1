@@ -57,6 +57,18 @@ void Config::loadConfig(const std::string &filename)
             file >> delaysPerExec;
             requiredParams[param] = true;
         }
+        else if (param == "max-overall-mem")
+        {
+            file >> maxOverallMem;
+        }
+        else if (param == "mem-per-frame")
+        {
+            file >> memPerFrame;
+        }
+        else if (param == "mem-per-proc")
+        {
+            file >> memPerProc;
+        }
         else
         {
             throw ConfigException("Unknown parameter: " + param);
@@ -111,5 +123,41 @@ void Config::validateParameters()
     if (delaysPerExec < 0)
     {
         throw ConfigException("Invalid delays per execution (must be non-negative): " + std::to_string(delaysPerExec));
+    }
+
+    if (maxOverallMem <= 0)
+    {
+        throw ConfigException("Max overall memory must be greater than 0");
+    }
+
+    if (memPerFrame <= 0)
+    {
+        throw ConfigException("Memory per frame must be greater than 0");
+    }
+
+    if (memPerProc <= 0)
+    {
+        throw ConfigException("Memory per process must be greater than 0");
+    }
+
+    // Validate relationships between memory parameters
+    if (maxOverallMem % memPerFrame != 0)
+    {
+        throw ConfigException("Memory size must be multiple of frame size");
+    }
+
+    if (memPerProc % memPerFrame != 0)
+    {
+        throw ConfigException("Process memory must be multiple of frame size");
+    }
+
+    if (memPerProc > maxOverallMem)
+    {
+        throw ConfigException("Process memory cannot be larger than total memory");
+    }
+
+    if (memPerFrame > memPerProc)
+    {
+        throw ConfigException("Frame size cannot be larger than process memory");
     }
 }

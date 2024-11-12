@@ -27,6 +27,9 @@ public:
     uint32_t getMinInstructions() const { return minInstructions; }
     uint32_t getMaxInstructions() const { return maxInstructions; }
     uint32_t getDelaysPerExec() const { return delaysPerExec; }
+    uint32_t getMaxOverallMem() const { return maxOverallMem; }
+    uint32_t getMemPerFrame() const { return memPerFrame; }
+    uint32_t getMemPerProc() const { return memPerProc; }
 
     // Exception class for Config
     class ConfigException : public std::runtime_error
@@ -46,6 +49,10 @@ private:
     uint32_t maxInstructions;  // Range: [1, 2^32]
     uint32_t delaysPerExec;    // Range: [0, 2^32]
     bool initialized;
+
+    uint32_t maxOverallMem{16384}; // 16KB
+    uint32_t memPerFrame{16};      // 16 bytes per frame
+    uint32_t memPerProc{4096};     // 4KB per proces
 
     void validateParameters();
 };
